@@ -1,0 +1,71 @@
+#!/usr/bin/perl
+#
+# FileTracker.pl 1.0 (C) Smidsrød Consulting 15. June 2004->
+# Written by: Robin Smidsrød <robin@smidsrod.no>
+#
+# Program to keep track of changes to files in a directory
+#
+# This is the client version.
+#
+# This program is NOT public domain.
+#
+
+use strict;
+
+use DBI;
+use Data::Dumper;
+use POSIX;
+
+# Set to 1(true) to enable debug
+our $debug=0;
+
+our $version='1.0';
+
+# Init database handler
+my $dsn="dbi:Pg:dbname=filetracker";
+our $dbh=DBI->connect($dsn); # Add username and password after DSN if DB-environment needs it.
+$dbh->{'RaiseError'}=1;
+
+# Setup SQL statements
+our %SQL=(
+	SelectFileForPeriod	=> "SELECT r.path as root_path,f.*,s.start_time,s.end_time FROM root r, file f, snapshot s WHERE r.root_id=f.root_id AND f.snapshot_id=s.snapshot_id AND s.start_time BETWEEN ? AND ? ORDER BY r.path,f.path",
+);
+
+unless($ARGV[0]) {
+	print STDERR "Usage: $0 <start_time> [<end_time>]\n";
+	exit; # FAIL
+}
+
+# Save arguments
+my $start_time=$ARGV[0];
+my $end_time=$ARGV[1] ? $ARGV[1] : strftime('%F %T',localtime(time));
+
+print "FileTracker Client $version\n";
+print "Getting files for period: $start_time -> $end_time\n\n";
+
+eval {
+	# Start transaction
+	$dbh->begin_work;
+
+	# Find Root ID
+	my $sth=$dbh->prepare($SQL{'SelectFileForPeriod'});
+	$sth->execute($start_time,$end_time);
+	
+	# Read file records and output to screen
+	while(my $file=$sth->fetchrow_hashref) {
+		#print Dumper($file);
+		print $file->{'start_time'}, '|', $file->{'root_path'}, '|', $file->{'path'}, "\n";
+	}
+
+	# Commit transaction
+	$dbh->commit;
+
+};
+
+if ($@) {
+	print STDERR "Database Error, session terminated!\n", $@, "\n";
+	$dbh->rollback;
+	exit; # FAIL
+}
+
+exit; # OK
