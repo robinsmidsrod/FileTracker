@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 #
 # FileTracker.pl 1.0 (C) Smidsrød Consulting 15. June 2004->
+# Written by: Robin Smidsrød <robin@smidsrod.no>
 #
 # Program to keep track of changes to files in a directory
 # Should be run regularly (once a day/week) from cron/scheduler.
@@ -21,9 +22,11 @@ use POSIX;
 # Set to 1(true) to enable debug
 our $debug=0;
 
+our $version='1.0';
+
 # Init database handler
 my $dsn="dbi:Pg:dbname=filetracker";
-our $dbh=DBI->connect($dsn);
+our $dbh=DBI->connect($dsn); # Add username and password after DSN if DB-environment needs it.
 $dbh->{'RaiseError'}=1;
 
 # Init UUID generator
@@ -47,6 +50,7 @@ unless($ARGV[0]) {
 	exit; # FAIL
 }
 
+# Get root dir (1st argument)
 our $rootdir=$ARGV[0];
 $rootdir=~s/^(.*)\/$/$1/; # Trim trailing slash
 our $root_id;
@@ -55,6 +59,7 @@ our $file_insert_sth;
 our $file_select_sth;
 our $file_update_sth;
 
+print "FileTracker $version\n\n";
 print "Scanning directory: $rootdir\n";
 eval {
 	# Start transaction
@@ -66,7 +71,7 @@ eval {
 	
 	$root_id=$sth->fetchrow_array;
 
-	# Insert new root unless found
+	# Insert new root unless found, prune stale files if running with existing root
 	if (defined($root_id)) {
 
 		# Prune old files which is unavailable from database if root exist
@@ -82,7 +87,7 @@ eval {
 				if($rc) {
 					print "DEL: $pathname\n";
 				} else {
-					print STDERR "ERRDEL: $pathname\n";
+					print "ERRDEL: $pathname\n";
 				}
 			}
 		}
@@ -120,7 +125,7 @@ eval {
 };
 
 if ($@) {
-	print STDERR "DB Error: ", $@, "\n";
+	print "Database Error, session terminated!\n", $@, "\n";
 	$dbh->rollback;
 	exit; # FAIL
 }
@@ -128,64 +133,80 @@ if ($@) {
 exit; # OK
 
 sub verify_file {
+	my $filename=$_;
+
 	my $pathname=$File::Find::name;
 	
 	# Remove root dir from pathname
 	$pathname=~s/^$rootdir(.*)$/$1/;
 
 	# Check that file is a regular file
-	unless (-f $_) {
-		print STDERR "SKIPPED - Not a regular file: $pathname\n" if $debug;
+	unless (-f $filename) {
+		print "SKIPPED - Not a regular file: $pathname\n" if $debug;
 		return 'dir'; # BREAK
 	}
 
 	# Check that file is readable
-	unless (-r $_) {
-		print STDERR "SKIPPED - Unreadable: $pathname\n" if $debug;
+	unless (-r $filename) {
+		print "SKIPPED - Unreadable: $pathname\n" if $debug;
 		return 'unreadable'; # BREAK
 	}
 
-	# Generate MD5 Digest for file
-	open(FILE,$_) or die "Can't open file $_: $!\n";
-	binmode(FILE);
-	my $md5=Digest::MD5->new->addfile(*FILE)->hexdigest;
-	close(FILE);
-	
+	# Get common file information
+	my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks)=stat($filename);
+
 	# Check if file exist in database
 	$file_select_sth->execute($pathname,$root_id);
 	my $file_data=$file_select_sth->fetchrow_hashref;
 	unless($file_data) {
 
 		# Create new file entry if it doesn't exist already
-		my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks)=stat($_);
+
 		my $file_id=$ug->create_str;
+
+		# Generate MD5 Digest for file
+		open(FILE,$filename) or die "Can't open file $filename: $!\n";
+		binmode(FILE);
+		my $md5=Digest::MD5->new->addfile(*FILE)->hexdigest;
+		close(FILE);
 
 		my $rc=$file_insert_sth->execute($file_id,$pathname,$size,strftime('%F %T',localtime($ctime)),strftime('%F %T',localtime($mtime)),$md5,$root_id,$snapshot_id);
 		if ($rc) {
 			print "ADD: $pathname\n";
 		} else {
-			print STDERR "ERRADD: $pathname\n";
+			print "ERRADD: $pathname\n";
 		}
-		return 'add'; # OK
+
+	} else {
+		# Verify existing database record
+
+		# Check if mtime has changed, update if necessary
+		if ($file_data->{'mtime'} eq strftime('%F %T',localtime($mtime))) {
+
+			# File isn't changed. Leave alone
+			print "UCH: $pathname\n" if $debug;
+
+		} else {
+			# MD5 has changed, update database
+
+			# Generate MD5 Digest for file
+			open(FILE,$filename) or die "Can't open file $filename: $!\n";
+			binmode(FILE);
+			my $md5=Digest::MD5->new->addfile(*FILE)->hexdigest;
+			close(FILE);
+
+			my $file_id=$file_data->{'file_id'};
+
+			my $rc=$file_update_sth->execute($size,strftime('%F %T',localtime($ctime)),strftime('%F %T',localtime($mtime)),$md5,$snapshot_id,$file_id);
+			if ($rc) {
+				print "UPD: $pathname\n";
+			} else  {
+				print "ERR: $pathname\n";
+			}
+
+		}
+
 	}
 
-	# Check if MD5 digest has changed, update if necessary
-	if ($file_data->{'md5'} eq $md5) {
-		# File isn't changed. Leave alone
-		print "UCH: $pathname\n" if $debug;
-		return 'unchanged'; # OK
-	}
-	
-	# MD5 has changed, update database
-	my $file_id=$file_data->{'file_id'};
-
-	my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks)=stat($_);
-	my $rc=$file_update_sth->execute($size,strftime('%F %T',localtime($ctime)),strftime('%F %T',localtime($mtime)),$md5,$snapshot_id,$file_id);
-	if ($rc) {
-		print "UPD: $pathname\n";
-	} else  {
-		print STDERR "ERR: $pathname\n";
-	}
-
-	return 'update'; # OK
+	return; # OK
 }
