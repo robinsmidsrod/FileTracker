@@ -187,7 +187,7 @@ sub verify_file {
 			print "UCH: $pathname\n" if $debug;
 
 		} else {
-			# MD5 has changed, update database
+			# MTIME has changed, check if MD5 is changed before update database
 
 			# Generate MD5 Digest for file
 			open(FILE,$filename) or die "Can't open file $filename: $!\n";
@@ -195,13 +195,20 @@ sub verify_file {
 			my $md5=Digest::MD5->new->addfile(*FILE)->hexdigest;
 			close(FILE);
 
-			my $file_id=$file_data->{'file_id'};
+			# Check if MD5 has changed
+			if ($file_data->{'md5'} ne $md5) {
+				# MD5 has changed, update database				
+				my $file_id=$file_data->{'file_id'};
 
-			my $rc=$file_update_sth->execute($size,strftime('%F %T',localtime($ctime)),strftime('%F %T',localtime($mtime)),$md5,$snapshot_id,$file_id);
-			if ($rc) {
-				print "UPD: $pathname\n";
-			} else  {
-				print "ERR: $pathname\n";
+				my $rc=$file_update_sth->execute($size,strftime('%F %T',localtime($ctime)),strftime('%F %T',localtime($mtime)),$md5,$snapshot_id,$file_id);
+				if ($rc) {
+					print "UPD: $pathname\n";
+				} else  {
+					print "ERR: $pathname\n";
+				}
+			} else {
+				# MD5 hasn't changed, someone just resaved the same file
+				print "CTM: $pathname\n" if $debug;
 			}
 
 		}
