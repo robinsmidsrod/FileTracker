@@ -85,9 +85,9 @@ eval {
 			unless(-r $pathname) {
 				my $rc=$prune_sth->execute($file_id);
 				if($rc) {
-					print "DEL: $pathname\n";
+					print "DEL: $filepath\n";
 				} else {
-					print "ERRDEL: $pathname\n";
+					print "ERRDEL: $filepath\n";
 				}
 			}
 		}
