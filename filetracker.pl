@@ -38,6 +38,7 @@ our %SQL=(
 	UpdateSnapshotByID		=> "UPDATE snapshot SET end_time=? WHERE snapshot_id=?",
 	InsertRoot 			=> "INSERT INTO root (root_id,path) VALUES (?,?)",
 	SelectRootByPath		=> "SELECT root_id FROM root WHERE path=?",
+	SelectRoots         => "SELECT root_id,path FROM root ORDER BY path",
 	InsertFile			=> "INSERT INTO file (file_id,path,size,ctime,mtime,md5,root_id,snapshot_id) VALUES (?,?,?,?,?,?,?,?)",
 	UpdateFileByID			=> "UPDATE file SET size=?,ctime=?,mtime=?,md5=?,snapshot_id=? WHERE file_id=?",
 	SelectFileByPathAndRootID	=> "SELECT * FROM file WHERE path=? AND root_id=?",
@@ -50,6 +51,8 @@ unless($ARGV[0]) {
 	exit; # FAIL
 }
 
+print "FileTracker $version\n\n";
+
 # Get root dir (1st argument)
 our $rootdir=$ARGV[0];
 $rootdir=~s/^(.*)\/$/$1/; # Trim trailing slash
@@ -59,65 +62,72 @@ our $file_insert_sth;
 our $file_select_sth;
 our $file_update_sth;
 
-print "FileTracker $version\n\n";
-print "Scanning directory: $rootdir\n";
 eval {
 	# Start transaction
 	$dbh->begin_work;
 
-	# Find Root ID
-	my $sth=$dbh->prepare($SQL{'SelectRootByPath'});
-	$sth->execute($rootdir);
+	if ($rootdir=~/^update$/i) {
+
+	    print "Update of all roots requested.\n";
+	    
+	    # Iterate through all roots
+	    my $root_sth=$dbh->prepare($SQL{'SelectRoots'});
+	    $root_sth->execute();
+	    while( my $root=$root_sth->fetchrow_hashref() ) {
+	        $rootdir=$root->{'path'};
+	        $root_id=$root->{'root_id'};
 	
-	$root_id=$sth->fetchrow_array;
+            print "Scanning directory: $rootdir\n";
 
-	# Insert new root unless found, prune stale files if running with existing root
-	if (defined($root_id)) {
+            # Prune stale files if running with existing root
+            if (defined($root_id)) {
 
-		# Prune old files which is unavailable from database if root exist
-		my $prune_sth=$dbh->prepare($SQL{'DeleteFileByID'});
-		my $list_sth=$dbh->prepare($SQL{'SelectFileByRootID'});
-		$list_sth->execute($root_id);
-		
-		# Read file records and check if available
-		while((my $file_id,my $filepath)=$list_sth->fetchrow_array) {
-			my $pathname=$rootdir . $filepath;
-			unless(-r $pathname) {
-				my $rc=$prune_sth->execute($file_id);
-				if($rc) {
-					print "DEL: $filepath\n";
-				} else {
-					print "ERRDEL: $filepath\n";
-				}
-			}
-		}
+                # Prune old files which is unavailable from database if root exist
+                my $prune_sth=$dbh->prepare($SQL{'DeleteFileByID'});
+                my $list_sth=$dbh->prepare($SQL{'SelectFileByRootID'});
+                $list_sth->execute($root_id);
+                
+                # Read file records and check if available
+                while((my $file_id,my $filepath)=$list_sth->fetchrow_array) {
+                    my $pathname=$rootdir . $filepath;
+                    unless(-r $pathname) {
+                        my $rc=$prune_sth->execute($file_id);
+                        if($rc) {
+                            print "DEL: $filepath\n";
+                        } else {
+                            print "ERRDEL: $filepath\n";
+                        }
+                    }
+                }
 
-	} else {
+            }
 
-		# Create new root
-		$root_id=$ug->create_str;
-		my $sth=$dbh->prepare($SQL{'InsertRoot'});
-		$sth->execute($root_id,$rootdir);
+            # Insert new snapshot
+            $snapshot_id=$ug->create_str;
+            my $sth=$dbh->prepare($SQL{'InsertSnapshot'});
+            $sth->execute($snapshot_id,strftime('%F %T',localtime(time)));
+            
+            # Prepare file insert statement
+            $file_insert_sth=$dbh->prepare($SQL{'InsertFile'});
+            $file_select_sth=$dbh->prepare($SQL{'SelectFileByPathAndRootID'});
+            $file_update_sth=$dbh->prepare($SQL{'UpdateFileByID'});
 
-	}
+            # Find files and add to database
+            find(\&verify_file,$rootdir);
 
-
-	# Insert new snapshot
-	$snapshot_id=$ug->create_str;
-	my $sth=$dbh->prepare($SQL{'InsertSnapshot'});
-	$sth->execute($snapshot_id,strftime('%F %T',localtime(time)));
-	
-	# Prepare file insert statement
-	$file_insert_sth=$dbh->prepare($SQL{'InsertFile'});
-	$file_select_sth=$dbh->prepare($SQL{'SelectFileByPathAndRootID'});
-	$file_update_sth=$dbh->prepare($SQL{'UpdateFileByID'});
-
-	# Find files and add to database
-	find(\&verify_file,$rootdir);
-
-	# Set snapshot end-time
-	my $sth=$dbh->prepare($SQL{'UpdateSnapshotByID'});
-	$sth->execute(strftime('%F %T',localtime(time)),$snapshot_id);
+            # Set snapshot end-time
+            my $sth=$dbh->prepare($SQL{'UpdateSnapshotByID'});
+            $sth->execute(strftime('%F %T',localtime(time)),$snapshot_id);
+        }
+    }
+    else {
+        # Create new root
+        $root_id=$ug->create_str;
+        my $sth=$dbh->prepare($SQL{'InsertRoot'});
+        $sth->execute($root_id,$rootdir);
+        
+        print "New root created: $rootdir ($root_id)\nPlease rerun with 'update' to scan.\n" if $sth->rows == 1;
+    }
 
 	# Commit transaction
 	$dbh->commit;
