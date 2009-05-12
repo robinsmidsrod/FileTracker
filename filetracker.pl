@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 #
-# FileTracker.pl 1.0 (C) Smidsrød Consulting 15. June 2004->
-# Written by: Robin Smidsrød <robin@smidsrod.no>
+# FileTracker.pl 1.0 (C) SmidsrÃ¸d Consulting 15. June 2004->
+# Written by: Robin SmidsrÃ¸d <robin@smidsrod.no>
 #
 # Program to keep track of changes to files in a directory
 # Should be run regularly (once a day/week) from cron/scheduler.
